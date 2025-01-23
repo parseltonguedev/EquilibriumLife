@@ -1,0 +1,118 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Equilibrium Wellness Bot Infrastructure
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: equilibrium-life-app
+  Environment:
+    Type: String
+    AllowedValues: [dev, staging, prod]
+    Default: dev
+    Description: Deployment environment
+  TelegramToken:
+    Type: String
+    NoEcho: true
+    Description: Telegram bot token from BotFather
+  OpenAIApiKey:
+    Type: String
+    NoEcho: true
+    Description: OpenAI API key
+
+Globals:
+  Function:
+    Layers:
+      - !Ref PythonDependenciesLayer
+
+Resources:
+  # Main DynamoDB Table
+  WellnessDataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${ProjectName}-${Environment}-data
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+
+  # Telegram Bot Webhook Handler
+  BotHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Environment}-bot-handler
+      CodeUri: src/
+      Handler: bot_handler.webhook.lambda_handler
+      Runtime: python3.12
+      MemorySize: 512
+      Timeout: 30
+      Environment:
+        Variables:
+          TELEGRAM_TOKEN: !Ref TelegramToken
+          OPENAI_API_KEY: !Ref OpenAIApiKey
+          DYNAMODB_TABLE: !Ref WellnessDataTable
+          ENVIRONMENT: !Ref Environment
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WellnessDataTable
+      Events:
+        Webhook:
+          Type: HttpApi
+          Properties:
+            Path: /webhook
+            Method: POST
+
+  # Daily Reminder System
+  DailyReminderRule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(0 9 * * ? *)"
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt ReminderHandlerFunction.Arn
+          Id: !Sub ${ProjectName}-${Environment}-daily-reminder-target
+
+  ReminderHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${ProjectName}-${Environment}-reminder-handler
+      CodeUri: src/
+      Handler: bot_handler.reminders.lambda_handler
+      Runtime: python3.9
+      Environment:
+        Variables:
+          TELEGRAM_TOKEN: !Ref TelegramToken
+          DYNAMODB_TABLE: !Ref WellnessDataTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref WellnessDataTable
+
+  PythonDependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub ${ProjectName}-${Environment}-python-layer
+      Description: Dependencies for Equilibrium Wellness Bot
+      ContentUri: .
+      CompatibleRuntimes:
+        - python3.12
+      RetentionPolicy: Retain  # Avoid accidental deletion
+    Metadata:
+      BuildMethod: makefile
+      BuildArchitecture: x86_64
+
+Outputs:
+  WebhookEndpoint:
+    Description: Telegram webhook URL
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/webhook"
+  DynamoDBTable:
+    Description: Main data storage table
+    Value: !Ref WellnessDataTable
