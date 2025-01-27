@@ -2,17 +2,21 @@ import io
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime
-import aioboto3
 from aws_lambda_powertools import Logger
 
 from shared.constants import MOOD_HISTORY_NOT_FOUND_TEXT, MOOD_HISTORY_LAST_30_DAYS_TEXT, MOOD_HISTORY_GENERATION_FAILURE_TEXT
 from shared.config import DYNAMODB_TABLE
+from aws_resources.dynamodb import AsyncDynamoDBClient
 
 logger = Logger()
+
+# Setup AsyncDynamoDB client
+async_dynamodb_client = AsyncDynamoDBClient(DYNAMODB_TABLE)
 
 
 async def show_history(update, context) -> None:
     """Display mood history as a chart"""
+    logger.info("Start mood chart creation")
     user_id = update.effective_user.id
     user_key = f"telegram_{user_id}"
 
@@ -40,25 +44,27 @@ async def show_history(update, context) -> None:
 
 async def get_mood_history(user_key: str) -> list:
     """Query DynamoDB for mood entries"""
-    session = aioboto3.Session()
-    async with session.resource('dynamodb') as dynamodb:
-        table = await dynamodb.Table(DYNAMODB_TABLE)
+    logger.info("Get user mood history")
 
-        response = await table.query(
-            KeyConditionExpression="userId = :uid AND begins_with(sk, :prefix)",
-            ExpressionAttributeValues={
+    mood_history_records = []
+
+    # TODO: you can add Limit parameter for mood history generation
+    async for mood_history_records_response in async_dynamodb_client.query(
+        key_condition_expression="userId = :uid AND begins_with(sk, :prefix)",
+        expression_attribute_values={
                 ":uid": user_key,
                 ":prefix": "mood#"
             },
-            ScanIndexForward=False,  # Newest first
-            Limit=30  # Last 30 entries
-        )
+        scan_index_forward=False
+    ):
+        mood_history_records.append(mood_history_records_response)
 
-        return response.get("Items", [])
+    return mood_history_records
 
 
 async def generate_mood_chart(mood_data):
     # Convert timestamps and prepare data
+    logger.info("Generating mood chart")
     timestamps = []
     mood_values = []
 
