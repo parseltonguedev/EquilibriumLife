@@ -1,0 +1,11 @@
+version = 0.1
+[default.deploy.parameters]
+stack_name = "equilibrium-life-app-stack"
+resolve_s3 = true
+s3_prefix = "equilibrium-life-app-stack"
+region = "eu-central-1"
+profile = "bohdan_petprojects"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "ProjectName=\"equilibrium-life-app\" Environment=\"dev\""
+image_repositories = []
