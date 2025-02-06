@@ -1,58 +1,64 @@
-# src/bot_handler/reminders.py
-import os
-import logging
-import aioboto3
-from telegram import Bot
+import asyncio
 from telegram.error import TelegramError
+from telegram.ext import ApplicationBuilder
 from typing import Dict, Any
 
+from aws_lambda_powertools import Logger
+
+from shared.config import TELEGRAM_TOKEN, DYNAMODB_TABLE
+from aws_resources.dynamodb import AsyncDynamoDBClient
+
 # Configure logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger = Logger()
+
+# Telegram bot setup
+application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+async_dynamodb_client = AsyncDynamoDBClient(DYNAMODB_TABLE)
 
 
-async def get_users_with_reminders_enabled() -> list:
+async def get_users_with_reminders_enabled() -> set:
     """Fetch all users who have opted into reminders"""
-    dynamodb = aioboto3.resource("dynamodb")
-    table = await dynamodb.Table(os.getenv("DYNAMODB_TABLE"))
-
+    user_ids = set()
     try:
         # Scan for users with reminder preference
         # For POC: Assume all users with at least one mood log want reminders
-        response = await table.scan(
-            ProjectionExpression="userId",
-            FilterExpression="begins_with(sk, :prefix)",
-            ExpressionAttributeValues={":prefix": "mood#"}
-        )
+        async for scanned_users_records_response in async_dynamodb_client.scan(projection_expression="userId",
+                                                                               filter_expression="begins_with(sk, :prefix)",
+                                                                               expression_attribute_values={
+                                                                                   ":prefix": "mood#"}):
+            user_ids.add(scanned_users_records_response["userId"])
 
         # Extract unique user IDs
-        users = list({item["userId"] for item in response.get("Items", [])})
-        return users
+        return user_ids
 
     except Exception as e:
         logger.error(f"DynamoDB scan error: {str(e)}")
-        return []
+        return user_ids
 
 
-async def send_reminder(user_id: str, bot: Bot) -> bool:
+async def send_reminder(user_id: str) -> bool:
     """Send reminder message to a single user"""
     try:
-        # Extract numeric ID from "telegram_12345" format
-        telegram_id = int(user_id.split("_")[1])
-        await bot.send_message(
-            chat_id=telegram_id,
-            text="🌞 Good morning! How are you feeling today?\n"
-                 "Use /logmood [1-5] to track your mood."
-        )
+        async with application:
+
+            bot = application.bot
+            # Extract numeric ID from "telegram_12345" format
+            telegram_id = int(user_id.split("_")[1])
+            await bot.send_message(
+                chat_id=telegram_id,
+                text="🌞 Hello! How are you feeling today?\n"
+                     "Tracking your mood daily helps you notice patterns, understand what affects your well-being, and make positive changes.\n"
+                     "Even small check-ins can improve self-awareness and mental health. 💙"
+            )
         return True
     except (ValueError, IndexError, TelegramError) as e:
         logger.warning(f"Failed to send to {user_id}: {str(e)}")
         return False
 
 
-async def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+async def async_lambda_handler(event: Dict[str, Any]) -> Dict[str, Any]:
     """Main Lambda handler"""
-    bot = Bot(token=os.getenv("TELEGRAM_TOKEN"))
     try:
         # Get users to notify
         users = await get_users_with_reminders_enabled()
@@ -62,7 +68,7 @@ async def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         # Send reminders in parallel
         results = await asyncio.gather(
-            *[send_reminder(user_id, bot) for user_id in users]
+            *[send_reminder(user_id) for user_id in users]
         )
 
         success_count = sum(results)
@@ -75,5 +81,9 @@ async def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Reminder handler failed: {str(e)}")
         return {"statusCode": 500, "body": "Internal Server Error"}
-    finally:
-        await bot.close()
+
+
+@logger.inject_lambda_context
+def lambda_handler(event: dict, context) -> dict:
+    """Sync Lambda entry point"""
+    return asyncio.run(async_lambda_handler(event))
