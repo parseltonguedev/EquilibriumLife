@@ -79,22 +79,13 @@ Resources:
             Path: /webhook
             Method: POST
 
-  # Daily Reminder System
-  DailyReminderRule:
-    Type: AWS::Events::Rule
-    Properties:
-      ScheduleExpression: "cron(0 9 * * ? *)"
-      State: ENABLED
-      Targets:
-        - Arn: !GetAtt ReminderHandlerFunction.Arn
-          Id: !Sub ${ProjectName}-${Environment}-daily-reminder-target
-
   ReminderHandlerFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub ${ProjectName}-${Environment}-reminder-handler
       CodeUri: src/
       Handler: bot_handler.reminders.lambda_handler
+      Timeout: 30
       Environment:
         Variables:
           TELEGRAM_TOKEN: !Ref TelegramToken
@@ -102,6 +93,12 @@ Resources:
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref WellnessDataTable
+      Events:
+        ScheduledEvent:
+          Type: Schedule
+          Properties:
+            Schedule: "cron(0 8,18 * * ? *)"
+            Enabled: true
 
   PythonDependenciesLayer:
     Type: AWS::Serverless::LayerVersion
